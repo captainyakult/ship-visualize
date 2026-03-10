@@ -20,33 +20,43 @@ export function useAISStream({ apiKey, bounds }: UseAISStreamOptions) {
   const wsRef = useRef<WebSocket | null>(null);
   const shipsRef = useRef<Map<string, Ship>>(new Map());
   const boundsRef = useRef(bounds);
+  const apiKeyRef = useRef(apiKey);
   const reconnectTimer = useRef<ReturnType<typeof setTimeout>>();
   const flushTimer = useRef<ReturnType<typeof setInterval>>();
   const messageCountRef = useRef(0);
 
+  // Keep refs in sync
   boundsRef.current = bounds;
+  apiKeyRef.current = apiKey;
 
-  const sendSubscription = useCallback((ws: WebSocket) => {
+  const sendSubscription = useCallback(() => {
+    const ws = wsRef.current;
     const b = boundsRef.current;
-    if (!b || ws.readyState !== WebSocket.OPEN) return;
+    const key = apiKeyRef.current;
+    if (!ws || !b || !key || ws.readyState !== WebSocket.OPEN) return;
 
     const msg = {
-      Apikey: apiKey,
+      Apikey: key,
       BoundingBoxes: [
         [[b.south, b.west], [b.north, b.east]],
       ],
       FilterMessageTypes: ["PositionReport"],
     };
     ws.send(JSON.stringify(msg));
-  }, [apiKey]);
+  }, []);
 
+  // Connect/reconnect — only depends on apiKey via ref, not bounds
   const connect = useCallback(() => {
-    if (!apiKey || !bounds) return;
+    const key = apiKeyRef.current;
+    if (!key) return;
 
     // Clean up previous connection
+    clearTimeout(reconnectTimer.current);
     if (wsRef.current) {
       wsRef.current.onclose = null;
+      wsRef.current.onerror = null;
       wsRef.current.close();
+      wsRef.current = null;
     }
 
     setStatus("connecting");
@@ -55,7 +65,7 @@ export function useAISStream({ apiKey, bounds }: UseAISStreamOptions) {
 
     ws.onopen = () => {
       setStatus("connected");
-      sendSubscription(ws);
+      sendSubscription();
     };
 
     ws.onmessage = (event) => {
@@ -74,7 +84,9 @@ export function useAISStream({ apiKey, bounds }: UseAISStreamOptions) {
         if (lat == null || lon == null || (lat === 0 && lon === 0)) return;
 
         const existing = shipsRef.current.get(mmsi);
-        const path: [number, number][] = existing?.path ?? [];
+        const path: [number, number][] = existing?.path
+          ? [...existing.path]
+          : [];
 
         // Add current position to path if it moved
         if (
@@ -107,24 +119,36 @@ export function useAISStream({ apiKey, bounds }: UseAISStreamOptions) {
     };
 
     ws.onerror = () => {
-      setStatus("disconnected");
+      // onerror is always followed by onclose, so just let onclose handle state
     };
 
     ws.onclose = () => {
       setStatus("disconnected");
-      // Reconnect after 3 seconds
-      reconnectTimer.current = setTimeout(() => {
-        if (apiKey) connect();
-      }, 3000);
+      wsRef.current = null;
+      // Reconnect after 3 seconds if we still have a key
+      if (apiKeyRef.current) {
+        reconnectTimer.current = setTimeout(connect, 3000);
+      }
     };
-  }, [apiKey, bounds, sendSubscription]);
+  }, [sendSubscription]);
 
-  // Connect when API key is set
+  // Connect when API key changes (or on mount if key is stored)
   useEffect(() => {
     if (!apiKey) {
+      // Disconnect if key is cleared
+      clearTimeout(reconnectTimer.current);
+      if (wsRef.current) {
+        wsRef.current.onclose = null;
+        wsRef.current.close();
+        wsRef.current = null;
+      }
       setStatus("disconnected");
       return;
     }
+
+    // Clear existing ships when key changes
+    shipsRef.current.clear();
+    messageCountRef.current = 0;
     connect();
 
     return () => {
@@ -137,10 +161,10 @@ export function useAISStream({ apiKey, bounds }: UseAISStreamOptions) {
     };
   }, [apiKey, connect]);
 
-  // Re-subscribe when bounds change
+  // Re-subscribe when bounds change (without reconnecting)
   useEffect(() => {
-    if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN && bounds) {
-      sendSubscription(wsRef.current);
+    if (bounds && wsRef.current?.readyState === WebSocket.OPEN) {
+      sendSubscription();
     }
   }, [bounds, sendSubscription]);
 
