@@ -1,36 +1,109 @@
 "use client";
 
-import { VESSEL_TYPES, VesselType } from "@/types/ship";
+import { useState } from "react";
+import { VESSEL_TYPES, VesselType, ConnectionStatus } from "@/types/ship";
 
 interface FilterPanelProps {
   selectedType: VesselType;
   onTypeChange: (type: VesselType) => void;
   shipCount: number;
-  loading: boolean;
+  status: ConnectionStatus;
+  messageCount: number;
+  apiKey: string;
+  onApiKeyChange: (key: string) => void;
 }
+
+const STATUS_STYLES: Record<ConnectionStatus, { dot: string; text: string; label: string }> = {
+  disconnected: { dot: "bg-red-500", text: "text-red-600", label: "Disconnected" },
+  connecting: { dot: "bg-yellow-500 animate-pulse", text: "text-yellow-600", label: "Connecting..." },
+  connected: { dot: "bg-green-500", text: "text-green-600", label: "Live" },
+};
 
 export default function FilterPanel({
   selectedType,
   onTypeChange,
   shipCount,
-  loading,
+  status,
+  messageCount,
+  apiKey,
+  onApiKeyChange,
 }: FilterPanelProps) {
+  const [keyInput, setKeyInput] = useState(apiKey);
+  const [showKeyInput, setShowKeyInput] = useState(!apiKey);
+  const statusStyle = STATUS_STYLES[status];
+
   return (
-    <div className="absolute top-4 left-4 z-10 bg-white/95 backdrop-blur-sm rounded-xl shadow-lg p-4 min-w-[220px]">
-      <div className="flex items-center gap-2 mb-3">
-        <svg
-          width="20"
-          height="20"
-          viewBox="0 0 24 24"
-          fill="none"
-          stroke="currentColor"
-          strokeWidth="2"
-          className="text-blue-600"
-        >
-          <path d="M2 20l2-2h2l4-4-6-6 4-4 6 6 4-4h2l2-2" />
-        </svg>
-        <h2 className="font-semibold text-gray-800 text-sm">Ship Visualizer</h2>
+    <div className="absolute top-4 left-4 z-10 bg-white/95 backdrop-blur-sm rounded-xl shadow-lg p-4 min-w-[260px] max-w-[300px]">
+      <div className="flex items-center justify-between mb-3">
+        <div className="flex items-center gap-2">
+          <svg
+            width="20"
+            height="20"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            strokeWidth="2"
+            className="text-blue-600"
+          >
+            <path d="M2 20l2-2h2l4-4-6-6 4-4 6 6 4-4h2l2-2" />
+          </svg>
+          <h2 className="font-semibold text-gray-800 text-sm">Ship Visualizer</h2>
+        </div>
+        <div className={`flex items-center gap-1.5 text-[10px] font-medium ${statusStyle.text}`}>
+          <span className={`w-2 h-2 rounded-full ${statusStyle.dot}`} />
+          {statusStyle.label}
+        </div>
       </div>
+
+      {/* API Key section */}
+      {showKeyInput ? (
+        <div className="mb-3">
+          <label className="block text-xs font-medium text-gray-500 mb-1">
+            AISStream.io API Key
+          </label>
+          <div className="flex gap-1.5">
+            <input
+              type="password"
+              value={keyInput}
+              onChange={(e) => setKeyInput(e.target.value)}
+              placeholder="Enter API key..."
+              className="flex-1 px-2.5 py-1.5 text-xs bg-gray-50 border border-gray-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 text-gray-700"
+              onKeyDown={(e) => {
+                if (e.key === "Enter" && keyInput.trim()) {
+                  onApiKeyChange(keyInput.trim());
+                  setShowKeyInput(false);
+                }
+              }}
+            />
+            <button
+              onClick={() => {
+                if (keyInput.trim()) {
+                  onApiKeyChange(keyInput.trim());
+                  setShowKeyInput(false);
+                }
+              }}
+              className="px-2.5 py-1.5 text-xs bg-blue-500 text-white rounded-lg hover:bg-blue-600 transition-colors"
+            >
+              Connect
+            </button>
+          </div>
+          <a
+            href="https://aisstream.io"
+            target="_blank"
+            rel="noopener noreferrer"
+            className="text-[10px] text-blue-500 hover:underline mt-1 inline-block"
+          >
+            Get a free API key
+          </a>
+        </div>
+      ) : (
+        <button
+          onClick={() => setShowKeyInput(true)}
+          className="mb-3 text-[10px] text-gray-400 hover:text-gray-600 transition-colors"
+        >
+          Change API key
+        </button>
+      )}
 
       <label className="block text-xs font-medium text-gray-500 mb-1.5">
         Vessel Type
@@ -47,15 +120,13 @@ export default function FilterPanel({
         ))}
       </select>
 
-      <div className="mt-3 flex items-center gap-2 text-xs text-gray-500">
-        {loading ? (
-          <span className="flex items-center gap-1.5">
-            <span className="w-2 h-2 bg-blue-500 rounded-full animate-pulse" />
-            Loading ships...
-          </span>
-        ) : (
-          <span>
-            <strong className="text-gray-700">{shipCount}</strong> vessels visible
+      <div className="mt-3 flex items-center justify-between text-xs text-gray-500">
+        <span>
+          <strong className="text-gray-700">{shipCount}</strong> vessels
+        </span>
+        {status === "connected" && (
+          <span className="text-[10px] text-gray-400">
+            {messageCount.toLocaleString()} msgs
           </span>
         )}
       </div>

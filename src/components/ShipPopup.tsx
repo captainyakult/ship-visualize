@@ -16,6 +16,13 @@ const TYPE_COLORS: Record<string, string> = {
   Other: "bg-gray-100 text-gray-700",
 };
 
+function timeAgo(ts: number): string {
+  const sec = Math.floor((Date.now() - ts) / 1000);
+  if (sec < 5) return "just now";
+  if (sec < 60) return `${sec}s ago`;
+  return `${Math.floor(sec / 60)}m ago`;
+}
+
 export default function ShipPopup({ ship, onClose }: ShipPopupProps) {
   return (
     <div className="absolute bottom-6 left-1/2 -translate-x-1/2 z-20 bg-white rounded-xl shadow-xl p-4 min-w-[280px] max-w-[340px]">
@@ -45,22 +52,27 @@ export default function ShipPopup({ ship, onClose }: ShipPopupProps) {
         </div>
         <div className="bg-gray-50 rounded-lg p-2">
           <div className="text-gray-400 text-[10px]">Speed</div>
-          <div className="text-gray-700">{ship.speed} kn</div>
+          <div className="text-gray-700">{ship.speed.toFixed(1)} kn</div>
         </div>
         <div className="bg-gray-50 rounded-lg p-2">
           <div className="text-gray-400 text-[10px]">Heading</div>
           <div className="text-gray-700">{ship.heading}°</div>
         </div>
         <div className="bg-gray-50 rounded-lg p-2">
+          <div className="text-gray-400 text-[10px]">Course</div>
+          <div className="text-gray-700">{ship.course.toFixed(1)}°</div>
+        </div>
+        <div className="col-span-2 bg-gray-50 rounded-lg p-2">
           <div className="text-gray-400 text-[10px]">Position</div>
-          <div className="text-gray-700 font-mono text-[10px]">
-            {ship.lat.toFixed(4)}, {ship.lon.toFixed(4)}
+          <div className="text-gray-700 font-mono text-[11px]">
+            {ship.lat.toFixed(5)}, {ship.lon.toFixed(5)}
           </div>
         </div>
       </div>
 
-      <div className="mt-2 text-[10px] text-gray-400">
-        Track: {ship.path.length} points
+      <div className="mt-2 flex items-center justify-between text-[10px] text-gray-400">
+        <span>Track: {ship.path.length} points</span>
+        <span>{timeAgo(ship.lastUpdate)}</span>
       </div>
     </div>
   );

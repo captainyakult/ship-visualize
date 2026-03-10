@@ -1,10 +1,10 @@
 "use client";
 
-import { useEffect, useRef, useCallback, useState } from "react";
+import { useEffect, useRef, useCallback, useState, useMemo } from "react";
 import maplibregl from "maplibre-gl";
 import "maplibre-gl/dist/maplibre-gl.css";
 import { Ship, VesselType } from "@/types/ship";
-import { fetchShips } from "@/lib/fetchShips";
+import { useAISStream } from "@/hooks/useAISStream";
 import FilterPanel from "./FilterPanel";
 import ShipPopup from "./ShipPopup";
 
@@ -16,6 +16,8 @@ const TYPE_COLORS: Record<string, string> = {
   Military: "#a855f7",
   Other: "#9ca3af",
 };
+
+const API_KEY_STORAGE = "aisstream-api-key";
 
 function createShipSVG(heading: number, color: string): string {
   return `<svg width="24" height="24" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
@@ -33,40 +35,49 @@ interface MapViewProps {
 export default function MapView({ latitude, longitude }: MapViewProps) {
   const mapContainer = useRef<HTMLDivElement>(null);
   const map = useRef<maplibregl.Map | null>(null);
-  const markersRef = useRef<maplibregl.Marker[]>([]);
+  const markersRef = useRef<Map<string, maplibregl.Marker>>(new Map());
   const trailSourceAdded = useRef(false);
 
-  const [ships, setShips] = useState<Ship[]>([]);
-  const [filteredShips, setFilteredShips] = useState<Ship[]>([]);
+  const [apiKey, setApiKey] = useState("");
+  const [bounds, setBounds] = useState<{
+    north: number; south: number; east: number; west: number;
+  } | null>(null);
   const [selectedType, setSelectedType] = useState<VesselType>("All vessels");
   const [selectedShip, setSelectedShip] = useState<Ship | null>(null);
-  const [loading, setLoading] = useState(false);
 
-  // Filter ships when type or data changes
+  // Load stored API key
   useEffect(() => {
-    if (selectedType === "All vessels") {
-      setFilteredShips(ships);
-    } else {
-      setFilteredShips(ships.filter((s) => s.type === selectedType));
-    }
-  }, [ships, selectedType]);
+    const stored = localStorage.getItem(API_KEY_STORAGE);
+    if (stored) setApiKey(stored);
+  }, []);
 
-  const loadShips = useCallback(async (m: maplibregl.Map) => {
-    const bounds = m.getBounds();
-    setLoading(true);
-    try {
-      const data = await fetchShips({
-        north: bounds.getNorth(),
-        south: bounds.getSouth(),
-        east: bounds.getEast(),
-        west: bounds.getWest(),
-      });
-      setShips(data);
-    } catch {
-      console.error("Failed to fetch ships");
-    } finally {
-      setLoading(false);
-    }
+  const handleApiKeyChange = useCallback((key: string) => {
+    setApiKey(key);
+    localStorage.setItem(API_KEY_STORAGE, key);
+  }, []);
+
+  // AISStream WebSocket
+  const { ships: shipMap, status, messageCount } = useAISStream({
+    apiKey,
+    bounds,
+  });
+
+  // Convert map to filtered array
+  const allShips = useMemo(() => Array.from(shipMap.values()), [shipMap]);
+  const filteredShips = useMemo(() => {
+    if (selectedType === "All vessels") return allShips;
+    return allShips.filter((s) => s.type === selectedType);
+  }, [allShips, selectedType]);
+
+  // Update bounds from map viewport
+  const updateBounds = useCallback((m: maplibregl.Map) => {
+    const b = m.getBounds();
+    setBounds({
+      north: b.getNorth(),
+      south: b.getSouth(),
+      east: b.getEast(),
+      west: b.getWest(),
+    });
   }, []);
 
   // Initialize map
@@ -90,7 +101,6 @@ export default function MapView({ latitude, longitude }: MapViewProps) {
     );
 
     m.on("load", () => {
-      // Add trail source
       m.addSource("ship-trails", {
         type: "geojson",
         data: { type: "FeatureCollection", features: [] },
@@ -107,14 +117,13 @@ export default function MapView({ latitude, longitude }: MapViewProps) {
         },
       });
       trailSourceAdded.current = true;
-
-      loadShips(m);
+      updateBounds(m);
     });
 
     let debounceTimer: ReturnType<typeof setTimeout>;
     m.on("moveend", () => {
       clearTimeout(debounceTimer);
-      debounceTimer = setTimeout(() => loadShips(m), 500);
+      debounceTimer = setTimeout(() => updateBounds(m), 300);
     });
 
     map.current = m;
@@ -123,36 +132,53 @@ export default function MapView({ latitude, longitude }: MapViewProps) {
       m.remove();
       map.current = null;
     };
-  }, [latitude, longitude, loadShips]);
+  }, [latitude, longitude, updateBounds]);
 
-  // Update markers and trails when filtered ships change
+  // Update markers and trails when ships change
   useEffect(() => {
     const m = map.current;
     if (!m) return;
 
-    // Clear existing markers
-    markersRef.current.forEach((marker) => marker.remove());
-    markersRef.current = [];
+    const currentIds = new Set(filteredShips.map((s) => s.id));
 
-    // Add new markers
+    // Remove markers for ships no longer present
+    markersRef.current.forEach((marker, id) => {
+      if (!currentIds.has(id)) {
+        marker.remove();
+        markersRef.current.delete(id);
+      }
+    });
+
+    // Add/update markers
     filteredShips.forEach((ship) => {
       const color = TYPE_COLORS[ship.type] || TYPE_COLORS.Other;
-      const el = document.createElement("div");
-      el.innerHTML = createShipSVG(ship.heading, color);
-      el.style.cursor = "pointer";
-      el.style.width = "24px";
-      el.style.height = "24px";
+      const existing = markersRef.current.get(ship.id);
 
-      el.addEventListener("click", (e) => {
-        e.stopPropagation();
-        setSelectedShip(ship);
-      });
+      if (existing) {
+        // Update position
+        existing.setLngLat([ship.lon, ship.lat]);
+        // Update rotation via SVG
+        const el = existing.getElement();
+        el.innerHTML = createShipSVG(ship.heading, color);
+      } else {
+        // Create new marker
+        const el = document.createElement("div");
+        el.innerHTML = createShipSVG(ship.heading, color);
+        el.style.cursor = "pointer";
+        el.style.width = "24px";
+        el.style.height = "24px";
 
-      const marker = new maplibregl.Marker({ element: el })
-        .setLngLat([ship.lon, ship.lat])
-        .addTo(m);
+        el.addEventListener("click", (e) => {
+          e.stopPropagation();
+          setSelectedShip(ship);
+        });
 
-      markersRef.current.push(marker);
+        const marker = new maplibregl.Marker({ element: el })
+          .setLngLat([ship.lon, ship.lat])
+          .addTo(m);
+
+        markersRef.current.set(ship.id, marker);
+      }
     });
 
     // Update trails
@@ -164,10 +190,7 @@ export default function MapView({ latitude, longitude }: MapViewProps) {
           properties: { color: TYPE_COLORS[ship.type] || TYPE_COLORS.Other },
           geometry: {
             type: "LineString" as const,
-            coordinates: [
-              ...ship.path.map(([lat, lon]) => [lon, lat]),
-              [ship.lon, ship.lat],
-            ],
+            coordinates: ship.path.map(([lat, lon]) => [lon, lat]),
           },
         }));
 
@@ -179,7 +202,15 @@ export default function MapView({ latitude, longitude }: MapViewProps) {
         });
       }
     }
-  }, [filteredShips]);
+
+    // Update selected ship data if it's still in the set
+    if (selectedShip) {
+      const updated = shipMap.get(selectedShip.id);
+      if (updated && updated.lastUpdate !== selectedShip.lastUpdate) {
+        setSelectedShip(updated);
+      }
+    }
+  }, [filteredShips, shipMap, selectedShip]);
 
   return (
     <div className="relative w-full h-full">
@@ -192,7 +223,10 @@ export default function MapView({ latitude, longitude }: MapViewProps) {
           setSelectedShip(null);
         }}
         shipCount={filteredShips.length}
-        loading={loading}
+        status={status}
+        messageCount={messageCount}
+        apiKey={apiKey}
+        onApiKeyChange={handleApiKeyChange}
       />
 
       {selectedShip && (
