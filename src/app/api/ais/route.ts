@@ -80,6 +80,8 @@ export async function GET(req: NextRequest) {
   const stream = new ReadableStream({
     start(controller) {
       let aborted = false;
+      let simulationStarted = false;
+
       req.signal.addEventListener("abort", () => { aborted = true; });
 
       const send = (event: string, data: unknown) => {
@@ -91,7 +93,43 @@ export async function GET(req: NextRequest) {
         } catch { /* stream closed */ }
       };
 
-      // Try real AISStream first, fall back to simulation on timeout
+      function startSimulation() {
+        if (aborted || simulationStarted) return;
+        simulationStarted = true;
+
+        const shipCount = 15 + Math.floor(Math.random() * 10);
+        const ships = generateSimulatedShips(sN, wN, nN, eN, shipCount);
+
+        send("log", { msg: `Simulating ${ships.length} vessels in view` });
+        send("status", { status: "connected" });
+
+        for (const ship of ships) {
+          send("ais", makeAISMessage(ship));
+        }
+
+        const interval = setInterval(() => {
+          if (aborted) { clearInterval(interval); return; }
+
+          for (const ship of ships) {
+            const headingRad = (ship.heading * Math.PI) / 180;
+            const speedFactor = (ship.speed / 3600) * 2 * 0.01;
+            ship.lat += Math.cos(headingRad) * speedFactor;
+            ship.lon += Math.sin(headingRad) * speedFactor;
+            ship.heading += (Math.random() - 0.5) * 3;
+            ship.course = ship.heading + (Math.random() - 0.5) * 5;
+          }
+
+          const updateCount = 3 + Math.floor(Math.random() * 5);
+          for (let i = 0; i < updateCount; i++) {
+            const ship = ships[Math.floor(Math.random() * ships.length)];
+            send("ais", makeAISMessage(ship));
+          }
+        }, 2000);
+
+        req.signal.addEventListener("abort", () => clearInterval(interval));
+      }
+
+      // Try real AISStream first, fall back to simulation on timeout/error
       send("log", { msg: "Connecting to AISStream..." });
 
       const ws = new WebSocket(WS_URL);
@@ -100,6 +138,9 @@ export async function GET(req: NextRequest) {
       const connectTimeout = setTimeout(() => {
         if (!connected && !aborted) {
           send("log", { msg: "AISStream unreachable — switching to simulated data" });
+          // Remove error handler before closing to avoid double-triggering simulation
+          ws.removeAllListeners("error");
+          ws.on("error", () => {}); // suppress close-triggered error
           ws.close();
           startSimulation();
         }
@@ -143,48 +184,10 @@ export async function GET(req: NextRequest) {
 
       req.signal.addEventListener("abort", () => {
         clearTimeout(connectTimeout);
+        ws.removeAllListeners();
+        ws.on("error", () => {}); // suppress errors during cleanup
         ws.close();
       });
-
-      // Simulation fallback
-      function startSimulation() {
-        if (aborted) return;
-
-        const shipCount = 15 + Math.floor(Math.random() * 10);
-        const ships = generateSimulatedShips(sN, wN, nN, eN, shipCount);
-
-        send("log", { msg: `Simulating ${ships.length} vessels in view` });
-        send("status", { status: "connected" });
-
-        // Send initial positions
-        for (const ship of ships) {
-          send("ais", makeAISMessage(ship));
-        }
-
-        // Update positions periodically to simulate movement
-        const interval = setInterval(() => {
-          if (aborted) { clearInterval(interval); return; }
-
-          for (const ship of ships) {
-            const headingRad = (ship.heading * Math.PI) / 180;
-            const speedFactor = (ship.speed / 3600) * 2 * 0.01; // exaggerated for visibility
-            ship.lat += Math.cos(headingRad) * speedFactor;
-            ship.lon += Math.sin(headingRad) * speedFactor;
-            // Small random heading variation
-            ship.heading += (Math.random() - 0.5) * 3;
-            ship.course = ship.heading + (Math.random() - 0.5) * 5;
-          }
-
-          // Send updates for a random subset each tick
-          const updateCount = 3 + Math.floor(Math.random() * 5);
-          for (let i = 0; i < updateCount; i++) {
-            const ship = ships[Math.floor(Math.random() * ships.length)];
-            send("ais", makeAISMessage(ship));
-          }
-        }, 2000);
-
-        req.signal.addEventListener("abort", () => clearInterval(interval));
-      }
     },
   });
 
