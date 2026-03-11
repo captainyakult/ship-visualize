@@ -23,6 +23,8 @@ export function useAISStream({ bounds }: UseAISStreamOptions) {
   const flushTimer = useRef<ReturnType<typeof setInterval>>();
   const messageCountRef = useRef(0);
   const debugLogRef = useRef<string[]>([]);
+  const lastAISMessageTime = useRef<number>(0);
+  const aisMessageBatchCount = useRef<number>(0);
 
   const addLog = useCallback((msg: string) => {
     const entry = `${new Date().toLocaleTimeString()} ${msg}`;
@@ -67,9 +69,28 @@ export function useAISStream({ bounds }: UseAISStreamOptions) {
     es.addEventListener("ais", (e) => {
       try {
         const data = JSON.parse(e.data);
-        if (messageCountRef.current === 0) {
+        const now = Date.now();
+        aisMessageBatchCount.current++;
+
+        // Log first message
+        if (messageCountRef.current === 0 && aisMessageBatchCount.current === 1) {
           addLog(`First AIS message: type=${data.MessageType}`);
         }
+
+        // Log every 10th message with type breakdown
+        if (aisMessageBatchCount.current % 10 === 0) {
+          addLog(`AIS msgs received: ${aisMessageBatchCount.current} total (type=${data.MessageType})`);
+        }
+
+        // Log time gap if >10s since last message
+        if (lastAISMessageTime.current > 0) {
+          const gap = now - lastAISMessageTime.current;
+          if (gap > 10000) {
+            addLog(`AIS data gap: ${(gap / 1000).toFixed(1)}s since last message`);
+          }
+        }
+        lastAISMessageTime.current = now;
+
         if (data.MessageType?.toLowerCase() !== "positionreport") return;
 
         const meta = data.MetaData;
@@ -147,6 +168,7 @@ export function useAISStream({ bounds }: UseAISStreamOptions) {
   // Flush ships to state periodically and prune stale
   useEffect(() => {
     let lastLoggedCount = -1;
+    let silenceWarned = false;
     flushTimer.current = setInterval(() => {
       const now = Date.now();
       const map = shipsRef.current;
@@ -155,6 +177,18 @@ export function useAISStream({ bounds }: UseAISStreamOptions) {
       });
       setShips(new Map(map));
       setMessageCount(messageCountRef.current);
+
+      // Detect silence: warn if no AIS data for 15s while supposedly connected
+      if (lastAISMessageTime.current > 0) {
+        const silence = now - lastAISMessageTime.current;
+        if (silence > 15000 && !silenceWarned) {
+          addLog(`WARNING: No AIS data for ${(silence / 1000).toFixed(0)}s — stream may be stalled`);
+          silenceWarned = true;
+        } else if (silence <= 15000) {
+          silenceWarned = false;
+        }
+      }
+
       // Log ship count changes for debugging
       if (map.size !== lastLoggedCount) {
         addLog(`Ships tracked: ${map.size} | msgs: ${messageCountRef.current}`);

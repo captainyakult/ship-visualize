@@ -25,7 +25,7 @@ function timeAgo(ts: number): string {
 
 export default function ShipPopup({ ship, onClose }: ShipPopupProps) {
   return (
-    <div className="absolute bottom-6 left-1/2 -translate-x-1/2 z-20 bg-white rounded-xl shadow-xl p-4 min-w-[280px] max-w-[340px]">
+    <div className="absolute top-auto bottom-4 left-1/2 -translate-x-1/2 z-20 bg-white rounded-xl shadow-xl p-4 min-w-[280px] max-w-[340px] max-h-[50vh] overflow-y-auto">
       <div className="flex justify-between items-start mb-2">
         <div>
           <h3 className="font-semibold text-gray-800 text-sm">{ship.name}</h3>

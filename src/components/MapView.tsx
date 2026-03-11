@@ -195,7 +195,7 @@ export default function MapView({ latitude, longitude }: MapViewProps) {
   }, [filteredShips, shipMap, selectedShip]);
 
   return (
-    <div className="relative w-full h-full">
+    <div className="relative w-full h-full overflow-hidden">
       <div ref={mapContainer} className="w-full h-full" />
 
       <FilterPanel
