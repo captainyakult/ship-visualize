@@ -98,15 +98,19 @@ export function useAISStream({ bounds }: UseAISStreamOptions) {
         if (!meta || !report) return;
 
         const mmsi = String(meta.MMSI);
+        // Prefer PositionReport fields (actual AIS transmission) over MetaData (may lag)
         const lat = report.Latitude ?? meta.latitude;
         const lon = report.Longitude ?? meta.longitude;
 
-        // Log first 3 position reports with raw coords for debugging
-        if (messageCountRef.current < 3) {
-          addLog(`Ship ${mmsi} pos: lat=${lat.toFixed(5)} lon=${lon.toFixed(5)} (meta: ${meta.latitude},${meta.longitude} report: ${report.Latitude},${report.Longitude})`);
+        // Log first 5 position reports with raw coords for debugging
+        if (messageCountRef.current < 5) {
+          addLog(`Ship ${mmsi}: lat=${lat} lon=${lon} (report: ${report.Latitude},${report.Longitude} meta: ${meta.latitude},${meta.longitude})`);
         }
 
-        if (lat == null || lon == null || (lat === 0 && lon === 0)) return;
+        // Filter invalid AIS values: 91=lat unavailable, 181=lon unavailable
+        if (lat == null || lon == null) return;
+        if (lat === 0 && lon === 0) return;
+        if (Math.abs(lat) > 90 || Math.abs(lon) > 180) return;
 
         const existing = shipsRef.current.get(mmsi);
         const path: [number, number][] = existing?.path
@@ -129,7 +133,10 @@ export function useAISStream({ bounds }: UseAISStreamOptions) {
           lat,
           lon,
           speed: report.Sog ?? 0,
-          heading: report.TrueHeading ?? report.Cog ?? 0,
+          // AIS heading 511 = not available; fall back to COG
+          heading: (report.TrueHeading != null && report.TrueHeading !== 511)
+            ? report.TrueHeading
+            : (report.Cog ?? 0),
           course: report.Cog ?? 0,
           path,
           lastUpdate: Date.now(),

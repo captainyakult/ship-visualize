@@ -73,7 +73,7 @@ export default function MapView({ latitude, longitude }: MapViewProps) {
       container: mapContainer.current,
       style: "https://basemaps.cartocdn.com/gl/positron-gl-style/style.json",
       center: [longitude, latitude],
-      zoom: 12,
+      zoom: 10,
     });
 
     m.addControl(new maplibregl.NavigationControl(), "top-right");

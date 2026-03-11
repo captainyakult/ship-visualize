@@ -25,7 +25,8 @@ function timeAgo(ts: number): string {
 
 export default function ShipPopup({ ship, onClose }: ShipPopupProps) {
   return (
-    <div className="absolute top-auto bottom-4 left-1/2 -translate-x-1/2 z-20 bg-white rounded-xl shadow-xl p-4 min-w-[280px] max-w-[340px] max-h-[50vh] overflow-y-auto">
+    <div className="fixed inset-0 z-20 flex items-center justify-center pointer-events-none">
+     <div className="pointer-events-auto bg-white rounded-xl shadow-xl p-4 min-w-[280px] max-w-[340px] max-h-[70vh] overflow-y-auto">
       <div className="flex justify-between items-start mb-2">
         <div>
           <h3 className="font-semibold text-gray-800 text-sm">{ship.name}</h3>
@@ -74,6 +75,7 @@ export default function ShipPopup({ ship, onClose }: ShipPopupProps) {
         <span>Track: {ship.path.length} points</span>
         <span>{timeAgo(ship.lastUpdate)}</span>
       </div>
+     </div>
     </div>
   );
 }

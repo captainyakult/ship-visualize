@@ -3,10 +3,11 @@ import WebSocket from "ws";
 
 const WS_URL = "wss://stream.aisstream.io/v0/stream";
 const API_KEY = process.env.NEXT_PUBLIC_AISSTREAM_API_KEY || "a06e87868eda965ac17184bab2c8e250f2e0856d";
-const WS_CONNECT_TIMEOUT_MS = 3000;
-const WS_PING_INTERVAL_MS = 15000;
-const WS_SILENCE_TIMEOUT_MS = 45000;
+const WS_CONNECT_TIMEOUT_MS = 5000;
+const WS_PING_INTERVAL_MS = 20000;
+const WS_SILENCE_TIMEOUT_MS = 60000;
 const SSE_HEARTBEAT_INTERVAL_MS = 10000;
+const MAX_WS_RECONNECTS = 5;
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -155,23 +156,27 @@ export async function GET(req: NextRequest) {
         req.signal.addEventListener("abort", () => clearInterval(interval));
       }
 
+      let wsReconnects = 0;
+      let totalMsgCount = 0;
+
       function connectWS() {
         if (aborted) return;
 
-        send("log", { msg: "Connecting to AISStream..." });
+        send("log", { msg: `Connecting to AISStream... (attempt ${wsReconnects + 1})` });
         send("status", { status: "connecting" });
 
         const ws = new WebSocket(WS_URL);
         let connected = false;
-        let lastMessageTime = 0;
-        let msgCount = 0;
+        let reconnecting = false;
+        let lastDataTime = 0;
+        let sessionMsgCount = 0;
         let pingInterval: ReturnType<typeof setInterval> | undefined;
         let silenceCheckInterval: ReturnType<typeof setInterval> | undefined;
 
         const connectTimeout = setTimeout(() => {
           if (!connected && !aborted) {
             send("log", { msg: "AISStream unreachable — switching to simulated data" });
-            ws.removeAllListeners("error");
+            ws.removeAllListeners();
             ws.on("error", () => {});
             ws.close();
             startSimulation();
@@ -184,11 +189,32 @@ export async function GET(req: NextRequest) {
           clearTimeout(connectTimeout);
         }
 
+        function reconnect(reason: string) {
+          if (reconnecting || aborted) return;
+          reconnecting = true;
+          cleanup();
+          ws.removeAllListeners();
+          ws.on("error", () => {});
+          ws.close();
+
+          wsReconnects++;
+          if (wsReconnects > MAX_WS_RECONNECTS) {
+            send("log", { msg: `Max reconnects (${MAX_WS_RECONNECTS}) reached after: ${reason} — falling back to simulation` });
+            startSimulation();
+            return;
+          }
+
+          const delay = Math.min(3000 * wsReconnects, 15000);
+          send("log", { msg: `${reason} — reconnecting in ${(delay / 1000).toFixed(0)}s (attempt ${wsReconnects}/${MAX_WS_RECONNECTS})` });
+          send("status", { status: "connecting" });
+          setTimeout(() => connectWS(), delay);
+        }
+
         ws.on("open", () => {
           connected = true;
           clearTimeout(connectTimeout);
           send("log", { msg: "WebSocket opened, subscribing..." });
-          send("log", { msg: `Bbox: south=${sN}, west=${wN}, north=${nN}, east=${eN}` });
+          send("log", { msg: `Bbox: S=${sN.toFixed(2)} W=${wN.toFixed(2)} N=${nN.toFixed(2)} E=${eN.toFixed(2)}` });
           const sub = {
             APIKey: API_KEY,
             BoundingBoxes: [[[sN, wN], [nN, eN]]],
@@ -196,7 +222,7 @@ export async function GET(req: NextRequest) {
           };
           ws.send(JSON.stringify(sub));
           send("status", { status: "connected" });
-          lastMessageTime = Date.now();
+          lastDataTime = Date.now();
 
           // Ping to keep WS alive
           pingInterval = setInterval(() => {
@@ -204,42 +230,36 @@ export async function GET(req: NextRequest) {
               clearInterval(pingInterval);
               return;
             }
-            ws.ping();
+            try { ws.ping(); } catch { /* ignore */ }
           }, WS_PING_INTERVAL_MS);
 
-          // Detect silence and reconnect
+          // Detect data silence (pongs keep connection alive but we need actual data)
           silenceCheckInterval = setInterval(() => {
             if (aborted) { clearInterval(silenceCheckInterval); return; }
-            const silence = Date.now() - lastMessageTime;
-            if (silence > WS_SILENCE_TIMEOUT_MS && ws.readyState === WebSocket.OPEN) {
-              send("log", { msg: `No WS data for ${(silence / 1000).toFixed(0)}s — reconnecting...` });
-              cleanup();
-              ws.removeAllListeners();
-              ws.on("error", () => {});
-              ws.close();
-              // Reconnect after a short delay
-              setTimeout(() => connectWS(), 2000);
+            const silence = Date.now() - lastDataTime;
+            if (silence > WS_SILENCE_TIMEOUT_MS) {
+              reconnect(`No AIS data for ${(silence / 1000).toFixed(0)}s`);
             }
-          }, 10000);
+          }, 15000);
         });
 
         ws.on("message", (raw) => {
           try {
             const data = JSON.parse(raw.toString());
-            lastMessageTime = Date.now();
-            msgCount++;
+            lastDataTime = Date.now();
+            sessionMsgCount++;
+            totalMsgCount++;
 
-            // Log first few messages with position details for debugging
-            if (msgCount <= 3) {
+            // Log first few messages with position details
+            if (sessionMsgCount <= 3) {
               const meta = data.MetaData;
               const report = data.Message?.PositionReport;
               send("log", {
-                msg: `AIS #${msgCount}: type=${data.MessageType} mmsi=${meta?.MMSI} ` +
-                  `meta.lat=${meta?.latitude} meta.lon=${meta?.longitude} ` +
-                  `report.Lat=${report?.Latitude} report.Lon=${report?.Longitude}`
+                msg: `AIS #${totalMsgCount}: mmsi=${meta?.MMSI} ` +
+                  `lat=${report?.Latitude ?? meta?.latitude} lon=${report?.Longitude ?? meta?.longitude}`
               });
-            } else if (msgCount % 50 === 0) {
-              send("log", { msg: `AIS messages forwarded: ${msgCount}` });
+            } else if (sessionMsgCount % 100 === 0) {
+              send("log", { msg: `AIS session: ${sessionMsgCount} msgs (${totalMsgCount} total)` });
             }
 
             send("ais", data);
@@ -247,8 +267,12 @@ export async function GET(req: NextRequest) {
         });
 
         ws.on("pong", () => {
-          // WS is alive
-          lastMessageTime = Math.max(lastMessageTime, Date.now() - WS_SILENCE_TIMEOUT_MS + 15000);
+          // Pong keeps the silence timer from triggering too aggressively
+          // but doesn't fully reset it — we want actual data
+          const now = Date.now();
+          if (now - lastDataTime > WS_SILENCE_TIMEOUT_MS * 0.5) {
+            send("log", { msg: `WS alive (pong) but no data for ${((now - lastDataTime) / 1000).toFixed(0)}s` });
+          }
         });
 
         ws.on("error", (err) => {
@@ -263,10 +287,7 @@ export async function GET(req: NextRequest) {
         ws.on("close", (code, reason) => {
           cleanup();
           if (connected && !aborted) {
-            send("log", { msg: `WebSocket closed: code=${code} reason=${reason || "none"} — reconnecting in 3s...` });
-            send("status", { status: "connecting" });
-            // Auto-reconnect instead of closing the SSE stream
-            setTimeout(() => connectWS(), 3000);
+            reconnect(`WebSocket closed: code=${code} reason=${reason || "none"}`);
           }
         });
 
