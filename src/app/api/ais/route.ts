@@ -3,7 +3,7 @@ import WebSocket from "ws";
 
 const WS_URL = "wss://stream.aisstream.io/v0/stream";
 const API_KEY = process.env.NEXT_PUBLIC_AISSTREAM_API_KEY || "a06e87868eda965ac17184bab2c8e250f2e0856d";
-const WS_CONNECT_TIMEOUT_MS = 8000;
+const WS_CONNECT_TIMEOUT_MS = 3000;
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";

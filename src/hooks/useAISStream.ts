@@ -18,7 +18,7 @@ export function useAISStream({ bounds }: UseAISStreamOptions) {
 
   const esRef = useRef<EventSource | null>(null);
   const shipsRef = useRef<Map<string, Ship>>(new Map());
-  const boundsRef = useRef(bounds);
+  const connectedOnce = useRef(false);
   const reconnectTimer = useRef<ReturnType<typeof setTimeout>>();
   const flushTimer = useRef<ReturnType<typeof setInterval>>();
   const messageCountRef = useRef(0);
@@ -30,15 +30,7 @@ export function useAISStream({ bounds }: UseAISStreamOptions) {
     setDebugLog([...debugLogRef.current]);
   }, []);
 
-  boundsRef.current = bounds;
-
-  const connect = useCallback(() => {
-    const b = boundsRef.current;
-    if (!b) {
-      addLog("No bounds yet — waiting for map");
-      return;
-    }
-
+  const connect = useCallback((b: { north: number; south: number; east: number; west: number }) => {
     // Clean up previous
     clearTimeout(reconnectTimer.current);
     if (esRef.current) {
@@ -129,20 +121,19 @@ export function useAISStream({ bounds }: UseAISStreamOptions) {
       setStatus("disconnected");
       es.close();
       esRef.current = null;
-      reconnectTimer.current = setTimeout(connect, 3000);
+      reconnectTimer.current = setTimeout(() => {
+        if (b) connect(b);
+      }, 3000);
     };
   }, [addLog]);
 
-  // Connect when bounds become available, reconnect when they change
+  // Connect only once when bounds first become available
   useEffect(() => {
-    if (!bounds) {
-      addLog("Waiting for map bounds...");
-      return;
-    }
+    if (!bounds || connectedOnce.current) return;
 
-    shipsRef.current.clear();
-    messageCountRef.current = 0;
-    connect();
+    connectedOnce.current = true;
+    addLog("Map bounds ready — connecting");
+    connect(bounds);
 
     return () => {
       clearTimeout(reconnectTimer.current);
