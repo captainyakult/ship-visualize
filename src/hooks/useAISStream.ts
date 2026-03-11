@@ -36,7 +36,7 @@ export function useAISStream({ apiKey, bounds }: UseAISStreamOptions) {
     if (!ws || !b || !key || ws.readyState !== WebSocket.OPEN) return;
 
     const msg = {
-      Apikey: key,
+      APIKey: key,
       BoundingBoxes: [
         [[b.south, b.west], [b.north, b.east]],
       ],

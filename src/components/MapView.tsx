@@ -18,6 +18,7 @@ const TYPE_COLORS: Record<string, string> = {
 };
 
 const API_KEY_STORAGE = "aisstream-api-key";
+const DEFAULT_API_KEY = process.env.NEXT_PUBLIC_AISSTREAM_API_KEY || "a06e87868eda965ac17184bab2c8e250f2e0856d";
 
 function createShipSVG(heading: number, color: string): string {
   return `<svg width="24" height="24" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
@@ -45,10 +46,14 @@ export default function MapView({ latitude, longitude }: MapViewProps) {
   const [selectedType, setSelectedType] = useState<VesselType>("All vessels");
   const [selectedShip, setSelectedShip] = useState<Ship | null>(null);
 
-  // Load stored API key
+  // Load stored API key or use default from env
   useEffect(() => {
     const stored = localStorage.getItem(API_KEY_STORAGE);
-    if (stored) setApiKey(stored);
+    if (stored) {
+      setApiKey(stored);
+    } else if (DEFAULT_API_KEY) {
+      setApiKey(DEFAULT_API_KEY);
+    }
   }, []);
 
   const handleApiKeyChange = useCallback((key: string) => {
