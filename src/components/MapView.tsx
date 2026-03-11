@@ -39,22 +39,17 @@ export default function MapView({ latitude, longitude }: MapViewProps) {
   const markersRef = useRef<Map<string, maplibregl.Marker>>(new Map());
   const trailSourceAdded = useRef(false);
 
-  const [apiKey, setApiKey] = useState("");
+  const [apiKey] = useState(() => {
+    if (typeof window !== "undefined") {
+      return localStorage.getItem(API_KEY_STORAGE) || DEFAULT_API_KEY;
+    }
+    return DEFAULT_API_KEY;
+  });
   const [bounds, setBounds] = useState<{
     north: number; south: number; east: number; west: number;
   } | null>(null);
   const [selectedType, setSelectedType] = useState<VesselType>("All vessels");
   const [selectedShip, setSelectedShip] = useState<Ship | null>(null);
-
-  // Load stored API key or use default from env
-  useEffect(() => {
-    const stored = localStorage.getItem(API_KEY_STORAGE);
-    if (stored) {
-      setApiKey(stored);
-    } else if (DEFAULT_API_KEY) {
-      setApiKey(DEFAULT_API_KEY);
-    }
-  }, []);
 
 
   // AISStream WebSocket
