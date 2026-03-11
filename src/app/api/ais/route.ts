@@ -21,19 +21,37 @@ const SHIP_TYPES = [70, 71, 72, 80, 81, 60, 30, 35, 52, 74];
 function generateSimulatedShips(
   south: number, west: number, north: number, east: number, count: number
 ) {
+  // Place ships in the middle 60% of the bounding box to keep them away from edges,
+  // and bias towards center where water is more likely when user is near coast
+  const latRange = north - south;
+  const lonRange = east - west;
+  const latPad = latRange * 0.2;
+  const lonPad = lonRange * 0.2;
+
   const ships = [];
   for (let i = 0; i < count; i++) {
-    const lat = south + Math.random() * (north - south);
-    const lon = west + Math.random() * (east - west);
+    // Current position — biased towards center of view
+    const lat = (south + latPad) + Math.random() * (latRange - 2 * latPad);
+    const lon = (west + lonPad) + Math.random() * (lonRange - 2 * lonPad);
     const heading = Math.random() * 360;
-    const speed = Math.random() * 18 + 1;
+    const speed = 3 + Math.random() * 15; // 3-18 knots
     const shipType = SHIP_TYPES[i % SHIP_TYPES.length];
+
+    // Pre-compute a few historical positions by walking backwards from current
+    // so paths are visible immediately
+    const stepSize = (speed / 3600) * 2 * 0.008;
+    const headingRad = (heading * Math.PI) / 180;
+    const prevLat = lat - Math.cos(headingRad) * stepSize * 5;
+    const prevLon = lon - Math.sin(headingRad) * stepSize * 5;
+
     ships.push({
       mmsi: 200000000 + i,
       name: SHIP_NAMES[i % SHIP_NAMES.length],
       shipType,
       lat,
       lon,
+      prevLat,
+      prevLon,
       heading,
       speed,
       course: heading + (Math.random() - 0.5) * 10,
@@ -42,20 +60,22 @@ function generateSimulatedShips(
   return ships;
 }
 
-function makeAISMessage(ship: { mmsi: number; name: string; shipType: number; lat: number; lon: number; heading: number; speed: number; course: number }) {
+function makeAISMessage(ship: { mmsi: number; name: string; shipType: number; lat: number; lon: number; heading: number; speed: number; course: number; prevLat?: number; prevLon?: number }, usePrev = false) {
+  const lat = usePrev && ship.prevLat != null ? ship.prevLat : ship.lat;
+  const lon = usePrev && ship.prevLon != null ? ship.prevLon : ship.lon;
   return {
     MessageType: "PositionReport",
     MetaData: {
       MMSI: ship.mmsi,
       ShipName: ship.name,
       ShipType: ship.shipType,
-      latitude: ship.lat,
-      longitude: ship.lon,
+      latitude: lat,
+      longitude: lon,
     },
     Message: {
       PositionReport: {
-        Latitude: ship.lat,
-        Longitude: ship.lon,
+        Latitude: lat,
+        Longitude: lon,
         Sog: ship.speed,
         TrueHeading: ship.heading,
         Cog: ship.course,
@@ -103,28 +123,29 @@ export async function GET(req: NextRequest) {
         send("log", { msg: `Simulating ${ships.length} vessels in view` });
         send("status", { status: "connected" });
 
+        // Send historical positions first so paths are visible immediately
+        for (const ship of ships) {
+          send("ais", makeAISMessage(ship, true));
+        }
+        // Then send current positions (creates 2-point path right away)
         for (const ship of ships) {
           send("ais", makeAISMessage(ship));
         }
 
+        // Update ALL ships every 1.5s for smooth movement and path accumulation
         const interval = setInterval(() => {
           if (aborted) { clearInterval(interval); return; }
 
           for (const ship of ships) {
             const headingRad = (ship.heading * Math.PI) / 180;
-            const speedFactor = (ship.speed / 3600) * 2 * 0.01;
+            const speedFactor = (ship.speed / 3600) * 2 * 0.008;
             ship.lat += Math.cos(headingRad) * speedFactor;
             ship.lon += Math.sin(headingRad) * speedFactor;
-            ship.heading += (Math.random() - 0.5) * 3;
+            ship.heading += (Math.random() - 0.5) * 2;
             ship.course = ship.heading + (Math.random() - 0.5) * 5;
-          }
-
-          const updateCount = 3 + Math.floor(Math.random() * 5);
-          for (let i = 0; i < updateCount; i++) {
-            const ship = ships[Math.floor(Math.random() * ships.length)];
             send("ais", makeAISMessage(ship));
           }
-        }, 2000);
+        }, 1500);
 
         req.signal.addEventListener("abort", () => clearInterval(interval));
       }
