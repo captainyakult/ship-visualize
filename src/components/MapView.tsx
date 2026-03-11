@@ -17,9 +17,6 @@ const TYPE_COLORS: Record<string, string> = {
   Other: "#9ca3af",
 };
 
-const API_KEY_STORAGE = "aisstream-api-key";
-const DEFAULT_API_KEY = process.env.NEXT_PUBLIC_AISSTREAM_API_KEY || "a06e87868eda965ac17184bab2c8e250f2e0856d";
-
 function createShipSVG(heading: number, color: string): string {
   return `<svg width="24" height="24" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
     <g transform="rotate(${heading}, 12, 12)">
@@ -39,22 +36,14 @@ export default function MapView({ latitude, longitude }: MapViewProps) {
   const markersRef = useRef<Map<string, maplibregl.Marker>>(new Map());
   const trailSourceAdded = useRef(false);
 
-  const [apiKey] = useState(() => {
-    if (typeof window !== "undefined") {
-      return localStorage.getItem(API_KEY_STORAGE) || DEFAULT_API_KEY;
-    }
-    return DEFAULT_API_KEY;
-  });
   const [bounds, setBounds] = useState<{
     north: number; south: number; east: number; west: number;
   } | null>(null);
   const [selectedType, setSelectedType] = useState<VesselType>("All vessels");
   const [selectedShip, setSelectedShip] = useState<Ship | null>(null);
 
-
-  // AISStream WebSocket
+  // AISStream via server-side SSE proxy
   const { ships: shipMap, status, messageCount, debugLog } = useAISStream({
-    apiKey,
     bounds,
   });
 
@@ -151,13 +140,10 @@ export default function MapView({ latitude, longitude }: MapViewProps) {
       const existing = markersRef.current.get(ship.id);
 
       if (existing) {
-        // Update position
         existing.setLngLat([ship.lon, ship.lat]);
-        // Update rotation via SVG
         const el = existing.getElement();
         el.innerHTML = createShipSVG(ship.heading, color);
       } else {
-        // Create new marker
         const el = document.createElement("div");
         el.innerHTML = createShipSVG(ship.heading, color);
         el.style.cursor = "pointer";
@@ -221,7 +207,6 @@ export default function MapView({ latitude, longitude }: MapViewProps) {
         shipCount={filteredShips.length}
         status={status}
         messageCount={messageCount}
-        apiKey={apiKey}
       />
 
       {selectedShip && (
@@ -231,19 +216,16 @@ export default function MapView({ latitude, longitude }: MapViewProps) {
         />
       )}
 
-      {/* Debug log panel */}
-      <div className="absolute bottom-4 left-4 right-4 z-10 bg-black/80 text-green-400 rounded-lg p-3 max-h-[200px] overflow-y-auto font-mono text-[11px] leading-relaxed">
-        <div className="flex items-center justify-between mb-1">
-          <span className="text-green-300 font-bold text-xs">Connection Debug</span>
-          <span className="text-gray-400 text-[10px]">
-            key={apiKey ? `${apiKey.slice(0, 6)}...` : "none"} | bounds={bounds ? "yes" : "no"} | ws={status}
-          </span>
+      {/* Debug log panel — positioned at top-right for mobile visibility */}
+      <div className="absolute top-4 right-16 z-10 bg-black/85 text-green-400 rounded-lg p-2 max-w-[280px] max-h-[180px] overflow-y-auto font-mono text-[10px] leading-relaxed">
+        <div className="text-green-300 font-bold text-[10px] mb-1">
+          Debug | bounds={bounds ? "yes" : "no"} | {status}
         </div>
         {debugLog.length === 0 ? (
-          <div className="text-gray-500">Waiting for events...</div>
+          <div className="text-gray-500">Waiting...</div>
         ) : (
           debugLog.map((line, i) => (
-            <div key={i} className="text-[10px]">{line}</div>
+            <div key={i}>{line}</div>
           ))
         )}
       </div>

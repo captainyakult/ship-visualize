@@ -8,7 +8,6 @@ interface FilterPanelProps {
   shipCount: number;
   status: ConnectionStatus;
   messageCount: number;
-  apiKey: string;
 }
 
 const STATUS_STYLES: Record<ConnectionStatus, { dot: string; text: string; label: string }> = {
@@ -23,7 +22,6 @@ export default function FilterPanel({
   shipCount,
   status,
   messageCount,
-  apiKey,
 }: FilterPanelProps) {
   const statusStyle = STATUS_STYLES[status];
 
@@ -49,13 +47,6 @@ export default function FilterPanel({
           {statusStyle.label}
         </div>
       </div>
-
-      {/* API Key status */}
-      {apiKey && (
-        <div className="mb-3 text-[10px] text-gray-400">
-          API key: {apiKey.slice(0, 6)}...{apiKey.slice(-4)}
-        </div>
-      )}
 
       <label className="block text-xs font-medium text-gray-500 mb-1.5">
         Vessel Type

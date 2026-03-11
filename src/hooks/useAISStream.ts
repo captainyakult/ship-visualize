@@ -3,25 +3,22 @@
 import { useEffect, useRef, useCallback, useState } from "react";
 import { Ship, ConnectionStatus, aisTypeToCategory } from "@/types/ship";
 
-const WS_URL = "wss://stream.aisstream.io/v0/stream";
-const SHIP_TTL_MS = 5 * 60 * 1000; // remove ships not seen in 5 min
+const SHIP_TTL_MS = 5 * 60 * 1000;
 const MAX_PATH_POINTS = 20;
 
 interface UseAISStreamOptions {
-  apiKey: string;
   bounds: { north: number; south: number; east: number; west: number } | null;
 }
 
-export function useAISStream({ apiKey, bounds }: UseAISStreamOptions) {
+export function useAISStream({ bounds }: UseAISStreamOptions) {
   const [ships, setShips] = useState<Map<string, Ship>>(new Map());
   const [status, setStatus] = useState<ConnectionStatus>("disconnected");
   const [messageCount, setMessageCount] = useState(0);
   const [debugLog, setDebugLog] = useState<string[]>([]);
 
-  const wsRef = useRef<WebSocket | null>(null);
+  const esRef = useRef<EventSource | null>(null);
   const shipsRef = useRef<Map<string, Ship>>(new Map());
   const boundsRef = useRef(bounds);
-  const apiKeyRef = useRef(apiKey);
   const reconnectTimer = useRef<ReturnType<typeof setTimeout>>();
   const flushTimer = useRef<ReturnType<typeof setInterval>>();
   const messageCountRef = useRef(0);
@@ -30,61 +27,56 @@ export function useAISStream({ apiKey, bounds }: UseAISStreamOptions) {
   const addLog = useCallback((msg: string) => {
     const entry = `${new Date().toLocaleTimeString()} ${msg}`;
     debugLogRef.current = [...debugLogRef.current.slice(-19), entry];
-    setDebugLog(debugLogRef.current);
+    setDebugLog([...debugLogRef.current]);
   }, []);
 
-  // Keep refs in sync
   boundsRef.current = bounds;
-  apiKeyRef.current = apiKey;
 
-  const sendSubscription = useCallback(() => {
-    const ws = wsRef.current;
-    const b = boundsRef.current;
-    const key = apiKeyRef.current;
-    if (!ws || !b || !key || ws.readyState !== WebSocket.OPEN) return;
-
-    const msg = {
-      APIKey: key,
-      BoundingBoxes: [
-        [[b.south, b.west], [b.north, b.east]],
-      ],
-      FilterMessageTypes: ["PositionReport"],
-    };
-    addLog(`Subscribing bbox: [${b.south.toFixed(2)},${b.west.toFixed(2)}]-[${b.north.toFixed(2)},${b.east.toFixed(2)}]`);
-    ws.send(JSON.stringify(msg));
-  }, [addLog]);
-
-  // Connect/reconnect — only depends on apiKey via ref, not bounds
   const connect = useCallback(() => {
-    const key = apiKeyRef.current;
-    if (!key) return;
-
-    // Clean up previous connection
-    clearTimeout(reconnectTimer.current);
-    if (wsRef.current) {
-      wsRef.current.onclose = null;
-      wsRef.current.onerror = null;
-      wsRef.current.close();
-      wsRef.current = null;
+    const b = boundsRef.current;
+    if (!b) {
+      addLog("No bounds yet — waiting for map");
+      return;
     }
 
-    addLog(`Connecting to ${WS_URL}...`);
-    addLog(`API key: ${key.slice(0, 6)}...${key.slice(-4)}`);
+    // Clean up previous
+    clearTimeout(reconnectTimer.current);
+    if (esRef.current) {
+      esRef.current.close();
+      esRef.current = null;
+    }
+
+    const params = new URLSearchParams({
+      south: b.south.toFixed(4),
+      west: b.west.toFixed(4),
+      north: b.north.toFixed(4),
+      east: b.east.toFixed(4),
+    });
+    const url = `/api/ais?${params}`;
+
+    addLog(`Connecting via SSE proxy...`);
+    addLog(`Bbox: [${b.south.toFixed(2)},${b.west.toFixed(2)}]-[${b.north.toFixed(2)},${b.east.toFixed(2)}]`);
     setStatus("connecting");
-    const ws = new WebSocket(WS_URL);
-    wsRef.current = ws;
 
-    ws.onopen = () => {
-      addLog("WebSocket opened");
-      setStatus("connected");
-      sendSubscription();
-    };
+    const es = new EventSource(url);
+    esRef.current = es;
 
-    ws.onmessage = (event) => {
+    es.addEventListener("log", (e) => {
+      const { msg } = JSON.parse(e.data);
+      addLog(`[server] ${msg}`);
+    });
+
+    es.addEventListener("status", (e) => {
+      const { status: s } = JSON.parse(e.data);
+      setStatus(s as ConnectionStatus);
+      addLog(`Status: ${s}`);
+    });
+
+    es.addEventListener("ais", (e) => {
       try {
-        const data = JSON.parse(event.data);
+        const data = JSON.parse(e.data);
         if (messageCountRef.current === 0) {
-          addLog(`First message: type=${data.MessageType}`);
+          addLog(`First AIS message: type=${data.MessageType}`);
         }
         if (data.MessageType !== "PositionReport") return;
 
@@ -103,7 +95,6 @@ export function useAISStream({ apiKey, bounds }: UseAISStreamOptions) {
           ? [...existing.path]
           : [];
 
-        // Add current position to path if it moved
         if (
           path.length === 0 ||
           Math.abs(path[path.length - 1][0] - lat) > 0.0001 ||
@@ -129,68 +120,44 @@ export function useAISStream({ apiKey, bounds }: UseAISStreamOptions) {
         shipsRef.current.set(mmsi, ship);
         messageCountRef.current++;
       } catch {
-        // ignore malformed messages
+        // ignore malformed
       }
-    };
+    });
 
-    ws.onerror = (e) => {
-      addLog(`WebSocket error: ${(e as ErrorEvent).message || "unknown"}`);
-    };
-
-    ws.onclose = (e) => {
-      addLog(`WebSocket closed: code=${e.code} reason=${e.reason || "none"}`);
+    es.onerror = () => {
+      addLog("SSE connection error — reconnecting in 3s...");
       setStatus("disconnected");
-      wsRef.current = null;
-      if (apiKeyRef.current) {
-        addLog("Reconnecting in 3s...");
-        reconnectTimer.current = setTimeout(connect, 3000);
-      }
+      es.close();
+      esRef.current = null;
+      reconnectTimer.current = setTimeout(connect, 3000);
     };
-  }, [sendSubscription, addLog]);
+  }, [addLog]);
 
-  // Connect when API key changes (or on mount if key is stored)
+  // Connect when bounds become available, reconnect when they change
   useEffect(() => {
-    if (!apiKey) {
-      addLog("No API key set — waiting");
-      clearTimeout(reconnectTimer.current);
-      if (wsRef.current) {
-        wsRef.current.onclose = null;
-        wsRef.current.close();
-        wsRef.current = null;
-      }
-      setStatus("disconnected");
+    if (!bounds) {
+      addLog("Waiting for map bounds...");
       return;
     }
 
-    addLog(`API key changed — connecting (bounds=${bounds ? "yes" : "no"})`);
     shipsRef.current.clear();
     messageCountRef.current = 0;
     connect();
 
     return () => {
       clearTimeout(reconnectTimer.current);
-      if (wsRef.current) {
-        wsRef.current.onclose = null;
-        wsRef.current.close();
-        wsRef.current = null;
+      if (esRef.current) {
+        esRef.current.close();
+        esRef.current = null;
       }
     };
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [apiKey, connect, addLog]);
+  }, [bounds, connect, addLog]);
 
-  // Re-subscribe when bounds change (without reconnecting)
-  useEffect(() => {
-    if (bounds && wsRef.current?.readyState === WebSocket.OPEN) {
-      sendSubscription();
-    }
-  }, [bounds, sendSubscription]);
-
-  // Flush ships to state periodically and prune stale ships
+  // Flush ships to state periodically and prune stale
   useEffect(() => {
     flushTimer.current = setInterval(() => {
       const now = Date.now();
       const map = shipsRef.current;
-      // Prune stale
       map.forEach((ship, id) => {
         if (now - ship.lastUpdate > SHIP_TTL_MS) map.delete(id);
       });
