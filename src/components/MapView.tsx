@@ -56,13 +56,9 @@ export default function MapView({ latitude, longitude }: MapViewProps) {
     }
   }, []);
 
-  const handleApiKeyChange = useCallback((key: string) => {
-    setApiKey(key);
-    localStorage.setItem(API_KEY_STORAGE, key);
-  }, []);
 
   // AISStream WebSocket
-  const { ships: shipMap, status, messageCount } = useAISStream({
+  const { ships: shipMap, status, messageCount, debugLog } = useAISStream({
     apiKey,
     bounds,
   });
@@ -231,7 +227,6 @@ export default function MapView({ latitude, longitude }: MapViewProps) {
         status={status}
         messageCount={messageCount}
         apiKey={apiKey}
-        onApiKeyChange={handleApiKeyChange}
       />
 
       {selectedShip && (
@@ -240,6 +235,23 @@ export default function MapView({ latitude, longitude }: MapViewProps) {
           onClose={() => setSelectedShip(null)}
         />
       )}
+
+      {/* Debug log panel */}
+      <div className="absolute bottom-4 left-4 right-4 z-10 bg-black/80 text-green-400 rounded-lg p-3 max-h-[200px] overflow-y-auto font-mono text-[11px] leading-relaxed">
+        <div className="flex items-center justify-between mb-1">
+          <span className="text-green-300 font-bold text-xs">Connection Debug</span>
+          <span className="text-gray-400 text-[10px]">
+            key={apiKey ? `${apiKey.slice(0, 6)}...` : "none"} | bounds={bounds ? "yes" : "no"} | ws={status}
+          </span>
+        </div>
+        {debugLog.length === 0 ? (
+          <div className="text-gray-500">Waiting for events...</div>
+        ) : (
+          debugLog.map((line, i) => (
+            <div key={i} className="text-[10px]">{line}</div>
+          ))
+        )}
+      </div>
     </div>
   );
 }

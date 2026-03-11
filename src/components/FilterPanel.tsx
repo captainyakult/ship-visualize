@@ -1,6 +1,5 @@
 "use client";
 
-import { useState } from "react";
 import { VESSEL_TYPES, VesselType, ConnectionStatus } from "@/types/ship";
 
 interface FilterPanelProps {
@@ -10,7 +9,6 @@ interface FilterPanelProps {
   status: ConnectionStatus;
   messageCount: number;
   apiKey: string;
-  onApiKeyChange: (key: string) => void;
 }
 
 const STATUS_STYLES: Record<ConnectionStatus, { dot: string; text: string; label: string }> = {
@@ -26,10 +24,7 @@ export default function FilterPanel({
   status,
   messageCount,
   apiKey,
-  onApiKeyChange,
 }: FilterPanelProps) {
-  const [keyInput, setKeyInput] = useState(apiKey);
-  const [showKeyInput, setShowKeyInput] = useState(!apiKey);
   const statusStyle = STATUS_STYLES[status];
 
   return (
@@ -55,54 +50,11 @@ export default function FilterPanel({
         </div>
       </div>
 
-      {/* API Key section */}
-      {showKeyInput ? (
-        <div className="mb-3">
-          <label className="block text-xs font-medium text-gray-500 mb-1">
-            AISStream.io API Key
-          </label>
-          <div className="flex gap-1.5">
-            <input
-              type="password"
-              value={keyInput}
-              onChange={(e) => setKeyInput(e.target.value)}
-              placeholder="Enter API key..."
-              className="flex-1 px-2.5 py-1.5 text-xs bg-gray-50 border border-gray-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 text-gray-700"
-              onKeyDown={(e) => {
-                if (e.key === "Enter" && keyInput.trim()) {
-                  onApiKeyChange(keyInput.trim());
-                  setShowKeyInput(false);
-                }
-              }}
-            />
-            <button
-              onClick={() => {
-                if (keyInput.trim()) {
-                  onApiKeyChange(keyInput.trim());
-                  setShowKeyInput(false);
-                }
-              }}
-              className="px-2.5 py-1.5 text-xs bg-blue-500 text-white rounded-lg hover:bg-blue-600 transition-colors"
-            >
-              Connect
-            </button>
-          </div>
-          <a
-            href="https://aisstream.io"
-            target="_blank"
-            rel="noopener noreferrer"
-            className="text-[10px] text-blue-500 hover:underline mt-1 inline-block"
-          >
-            Get a free API key
-          </a>
+      {/* API Key status */}
+      {apiKey && (
+        <div className="mb-3 text-[10px] text-gray-400">
+          API key: {apiKey.slice(0, 6)}...{apiKey.slice(-4)}
         </div>
-      ) : (
-        <button
-          onClick={() => setShowKeyInput(true)}
-          className="mb-3 text-[10px] text-gray-400 hover:text-gray-600 transition-colors"
-        >
-          Change API key
-        </button>
       )}
 
       <label className="block text-xs font-medium text-gray-500 mb-1.5">

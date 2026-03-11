@@ -16,6 +16,7 @@ export function useAISStream({ apiKey, bounds }: UseAISStreamOptions) {
   const [ships, setShips] = useState<Map<string, Ship>>(new Map());
   const [status, setStatus] = useState<ConnectionStatus>("disconnected");
   const [messageCount, setMessageCount] = useState(0);
+  const [debugLog, setDebugLog] = useState<string[]>([]);
 
   const wsRef = useRef<WebSocket | null>(null);
   const shipsRef = useRef<Map<string, Ship>>(new Map());
@@ -24,6 +25,13 @@ export function useAISStream({ apiKey, bounds }: UseAISStreamOptions) {
   const reconnectTimer = useRef<ReturnType<typeof setTimeout>>();
   const flushTimer = useRef<ReturnType<typeof setInterval>>();
   const messageCountRef = useRef(0);
+  const debugLogRef = useRef<string[]>([]);
+
+  const addLog = useCallback((msg: string) => {
+    const entry = `${new Date().toLocaleTimeString()} ${msg}`;
+    debugLogRef.current = [...debugLogRef.current.slice(-19), entry];
+    setDebugLog(debugLogRef.current);
+  }, []);
 
   // Keep refs in sync
   boundsRef.current = bounds;
@@ -42,8 +50,9 @@ export function useAISStream({ apiKey, bounds }: UseAISStreamOptions) {
       ],
       FilterMessageTypes: ["PositionReport"],
     };
+    addLog(`Subscribing bbox: [${b.south.toFixed(2)},${b.west.toFixed(2)}]-[${b.north.toFixed(2)},${b.east.toFixed(2)}]`);
     ws.send(JSON.stringify(msg));
-  }, []);
+  }, [addLog]);
 
   // Connect/reconnect — only depends on apiKey via ref, not bounds
   const connect = useCallback(() => {
@@ -59,11 +68,14 @@ export function useAISStream({ apiKey, bounds }: UseAISStreamOptions) {
       wsRef.current = null;
     }
 
+    addLog(`Connecting to ${WS_URL}...`);
+    addLog(`API key: ${key.slice(0, 6)}...${key.slice(-4)}`);
     setStatus("connecting");
     const ws = new WebSocket(WS_URL);
     wsRef.current = ws;
 
     ws.onopen = () => {
+      addLog("WebSocket opened");
       setStatus("connected");
       sendSubscription();
     };
@@ -71,6 +83,9 @@ export function useAISStream({ apiKey, bounds }: UseAISStreamOptions) {
     ws.onmessage = (event) => {
       try {
         const data = JSON.parse(event.data);
+        if (messageCountRef.current === 0) {
+          addLog(`First message: type=${data.MessageType}`);
+        }
         if (data.MessageType !== "PositionReport") return;
 
         const meta = data.MetaData;
@@ -118,24 +133,25 @@ export function useAISStream({ apiKey, bounds }: UseAISStreamOptions) {
       }
     };
 
-    ws.onerror = () => {
-      // onerror is always followed by onclose, so just let onclose handle state
+    ws.onerror = (e) => {
+      addLog(`WebSocket error: ${(e as ErrorEvent).message || "unknown"}`);
     };
 
-    ws.onclose = () => {
+    ws.onclose = (e) => {
+      addLog(`WebSocket closed: code=${e.code} reason=${e.reason || "none"}`);
       setStatus("disconnected");
       wsRef.current = null;
-      // Reconnect after 3 seconds if we still have a key
       if (apiKeyRef.current) {
+        addLog("Reconnecting in 3s...");
         reconnectTimer.current = setTimeout(connect, 3000);
       }
     };
-  }, [sendSubscription]);
+  }, [sendSubscription, addLog]);
 
   // Connect when API key changes (or on mount if key is stored)
   useEffect(() => {
     if (!apiKey) {
-      // Disconnect if key is cleared
+      addLog("No API key set — waiting");
       clearTimeout(reconnectTimer.current);
       if (wsRef.current) {
         wsRef.current.onclose = null;
@@ -146,7 +162,7 @@ export function useAISStream({ apiKey, bounds }: UseAISStreamOptions) {
       return;
     }
 
-    // Clear existing ships when key changes
+    addLog(`API key changed — connecting (bounds=${bounds ? "yes" : "no"})`);
     shipsRef.current.clear();
     messageCountRef.current = 0;
     connect();
@@ -159,7 +175,8 @@ export function useAISStream({ apiKey, bounds }: UseAISStreamOptions) {
         wsRef.current = null;
       }
     };
-  }, [apiKey, connect]);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [apiKey, connect, addLog]);
 
   // Re-subscribe when bounds change (without reconnecting)
   useEffect(() => {
@@ -184,5 +201,5 @@ export function useAISStream({ apiKey, bounds }: UseAISStreamOptions) {
     return () => clearInterval(flushTimer.current);
   }, []);
 
-  return { ships, status, messageCount };
+  return { ships, status, messageCount, debugLog };
 }
