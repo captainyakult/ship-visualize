@@ -77,9 +77,9 @@ export function useAISStream({ bounds }: UseAISStreamOptions) {
           addLog(`First AIS message: type=${data.MessageType}`);
         }
 
-        // Log every 10th message with type breakdown
-        if (aisMessageBatchCount.current % 10 === 0) {
-          addLog(`AIS msgs received: ${aisMessageBatchCount.current} total (type=${data.MessageType})`);
+        // Log every 50th message
+        if (aisMessageBatchCount.current % 50 === 0) {
+          addLog(`AIS msgs received: ${aisMessageBatchCount.current} total`);
         }
 
         // Log time gap if >10s since last message
@@ -98,8 +98,13 @@ export function useAISStream({ bounds }: UseAISStreamOptions) {
         if (!meta || !report) return;
 
         const mmsi = String(meta.MMSI);
-        const lat = meta.latitude ?? report.Latitude;
-        const lon = meta.longitude ?? report.Longitude;
+        const lat = report.Latitude ?? meta.latitude;
+        const lon = report.Longitude ?? meta.longitude;
+
+        // Log first 3 position reports with raw coords for debugging
+        if (messageCountRef.current < 3) {
+          addLog(`Ship ${mmsi} pos: lat=${lat.toFixed(5)} lon=${lon.toFixed(5)} (meta: ${meta.latitude},${meta.longitude} report: ${report.Latitude},${report.Longitude})`);
+        }
 
         if (lat == null || lon == null || (lat === 0 && lon === 0)) return;
 

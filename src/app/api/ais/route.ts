@@ -4,6 +4,9 @@ import WebSocket from "ws";
 const WS_URL = "wss://stream.aisstream.io/v0/stream";
 const API_KEY = process.env.NEXT_PUBLIC_AISSTREAM_API_KEY || "a06e87868eda965ac17184bab2c8e250f2e0856d";
 const WS_CONNECT_TIMEOUT_MS = 3000;
+const WS_PING_INTERVAL_MS = 15000;
+const WS_SILENCE_TIMEOUT_MS = 45000;
+const SSE_HEARTBEAT_INTERVAL_MS = 10000;
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -21,8 +24,6 @@ const SHIP_TYPES = [70, 71, 72, 80, 81, 60, 30, 35, 52, 74];
 function generateSimulatedShips(
   south: number, west: number, north: number, east: number, count: number
 ) {
-  // Place ships in the middle 60% of the bounding box to keep them away from edges,
-  // and bias towards center where water is more likely when user is near coast
   const latRange = north - south;
   const lonRange = east - west;
   const latPad = latRange * 0.2;
@@ -30,15 +31,12 @@ function generateSimulatedShips(
 
   const ships = [];
   for (let i = 0; i < count; i++) {
-    // Current position — biased towards center of view
     const lat = (south + latPad) + Math.random() * (latRange - 2 * latPad);
     const lon = (west + lonPad) + Math.random() * (lonRange - 2 * lonPad);
     const heading = Math.random() * 360;
-    const speed = 3 + Math.random() * 15; // 3-18 knots
+    const speed = 3 + Math.random() * 15;
     const shipType = SHIP_TYPES[i % SHIP_TYPES.length];
 
-    // Pre-compute a few historical positions by walking backwards from current
-    // so paths are visible immediately
     const stepSize = (speed / 3600) * 2 * 0.008;
     const headingRad = (heading * Math.PI) / 180;
     const prevLat = lat - Math.cos(headingRad) * stepSize * 5;
@@ -113,6 +111,16 @@ export async function GET(req: NextRequest) {
         } catch { /* stream closed */ }
       };
 
+      // SSE heartbeat comment to prevent browser/proxy timeout
+      const heartbeatInterval = setInterval(() => {
+        if (aborted) { clearInterval(heartbeatInterval); return; }
+        try {
+          controller.enqueue(encoder.encode(": heartbeat\n\n"));
+        } catch { /* stream closed */ }
+      }, SSE_HEARTBEAT_INTERVAL_MS);
+
+      req.signal.addEventListener("abort", () => clearInterval(heartbeatInterval));
+
       function startSimulation() {
         if (aborted || simulationStarted) return;
         simulationStarted = true;
@@ -123,16 +131,13 @@ export async function GET(req: NextRequest) {
         send("log", { msg: `Simulating ${ships.length} vessels in view` });
         send("status", { status: "connected" });
 
-        // Send historical positions first so paths are visible immediately
         for (const ship of ships) {
           send("ais", makeAISMessage(ship, true));
         }
-        // Then send current positions (creates 2-point path right away)
         for (const ship of ships) {
           send("ais", makeAISMessage(ship));
         }
 
-        // Update ALL ships every 1.5s for smooth movement and path accumulation
         const interval = setInterval(() => {
           if (aborted) { clearInterval(interval); return; }
 
@@ -150,65 +155,130 @@ export async function GET(req: NextRequest) {
         req.signal.addEventListener("abort", () => clearInterval(interval));
       }
 
-      // Try real AISStream first, fall back to simulation on timeout/error
-      send("log", { msg: "Connecting to AISStream..." });
+      function connectWS() {
+        if (aborted) return;
 
-      const ws = new WebSocket(WS_URL);
-      let connected = false;
+        send("log", { msg: "Connecting to AISStream..." });
+        send("status", { status: "connecting" });
 
-      const connectTimeout = setTimeout(() => {
-        if (!connected && !aborted) {
-          send("log", { msg: "AISStream unreachable — switching to simulated data" });
-          // Remove error handler before closing to avoid double-triggering simulation
-          ws.removeAllListeners("error");
-          ws.on("error", () => {}); // suppress close-triggered error
-          ws.close();
-          startSimulation();
-        }
-      }, WS_CONNECT_TIMEOUT_MS);
+        const ws = new WebSocket(WS_URL);
+        let connected = false;
+        let lastMessageTime = 0;
+        let msgCount = 0;
+        let pingInterval: ReturnType<typeof setInterval> | undefined;
+        let silenceCheckInterval: ReturnType<typeof setInterval> | undefined;
 
-      ws.on("open", () => {
-        connected = true;
-        clearTimeout(connectTimeout);
-        send("log", { msg: "WebSocket opened, subscribing..." });
-        const sub = {
-          APIKey: API_KEY,
-          BoundingBoxes: [[[sN, wN], [nN, eN]]],
-          FilterMessageTypes: ["PositionReport"],
-        };
-        ws.send(JSON.stringify(sub));
-        send("status", { status: "connected" });
-      });
+        const connectTimeout = setTimeout(() => {
+          if (!connected && !aborted) {
+            send("log", { msg: "AISStream unreachable — switching to simulated data" });
+            ws.removeAllListeners("error");
+            ws.on("error", () => {});
+            ws.close();
+            startSimulation();
+          }
+        }, WS_CONNECT_TIMEOUT_MS);
 
-      ws.on("message", (raw) => {
-        try {
-          send("ais", JSON.parse(raw.toString()));
-        } catch { /* skip */ }
-      });
-
-      ws.on("error", (err) => {
-        send("log", { msg: `WebSocket error: ${err.message}` });
-        if (!connected) {
+        function cleanup() {
+          clearInterval(pingInterval);
+          clearInterval(silenceCheckInterval);
           clearTimeout(connectTimeout);
-          send("log", { msg: "Falling back to simulated data" });
-          startSimulation();
         }
-      });
 
-      ws.on("close", (code, reason) => {
-        if (connected) {
-          send("log", { msg: `WebSocket closed: code=${code} reason=${reason || "none"}` });
-          send("status", { status: "disconnected" });
-          try { controller.close(); } catch { /* already closed */ }
-        }
-      });
+        ws.on("open", () => {
+          connected = true;
+          clearTimeout(connectTimeout);
+          send("log", { msg: "WebSocket opened, subscribing..." });
+          send("log", { msg: `Bbox: south=${sN}, west=${wN}, north=${nN}, east=${eN}` });
+          const sub = {
+            APIKey: API_KEY,
+            BoundingBoxes: [[[sN, wN], [nN, eN]]],
+            FilterMessageTypes: ["PositionReport"],
+          };
+          ws.send(JSON.stringify(sub));
+          send("status", { status: "connected" });
+          lastMessageTime = Date.now();
 
-      req.signal.addEventListener("abort", () => {
-        clearTimeout(connectTimeout);
-        ws.removeAllListeners();
-        ws.on("error", () => {}); // suppress errors during cleanup
-        ws.close();
-      });
+          // Ping to keep WS alive
+          pingInterval = setInterval(() => {
+            if (aborted || ws.readyState !== WebSocket.OPEN) {
+              clearInterval(pingInterval);
+              return;
+            }
+            ws.ping();
+          }, WS_PING_INTERVAL_MS);
+
+          // Detect silence and reconnect
+          silenceCheckInterval = setInterval(() => {
+            if (aborted) { clearInterval(silenceCheckInterval); return; }
+            const silence = Date.now() - lastMessageTime;
+            if (silence > WS_SILENCE_TIMEOUT_MS && ws.readyState === WebSocket.OPEN) {
+              send("log", { msg: `No WS data for ${(silence / 1000).toFixed(0)}s — reconnecting...` });
+              cleanup();
+              ws.removeAllListeners();
+              ws.on("error", () => {});
+              ws.close();
+              // Reconnect after a short delay
+              setTimeout(() => connectWS(), 2000);
+            }
+          }, 10000);
+        });
+
+        ws.on("message", (raw) => {
+          try {
+            const data = JSON.parse(raw.toString());
+            lastMessageTime = Date.now();
+            msgCount++;
+
+            // Log first few messages with position details for debugging
+            if (msgCount <= 3) {
+              const meta = data.MetaData;
+              const report = data.Message?.PositionReport;
+              send("log", {
+                msg: `AIS #${msgCount}: type=${data.MessageType} mmsi=${meta?.MMSI} ` +
+                  `meta.lat=${meta?.latitude} meta.lon=${meta?.longitude} ` +
+                  `report.Lat=${report?.Latitude} report.Lon=${report?.Longitude}`
+              });
+            } else if (msgCount % 50 === 0) {
+              send("log", { msg: `AIS messages forwarded: ${msgCount}` });
+            }
+
+            send("ais", data);
+          } catch { /* skip */ }
+        });
+
+        ws.on("pong", () => {
+          // WS is alive
+          lastMessageTime = Math.max(lastMessageTime, Date.now() - WS_SILENCE_TIMEOUT_MS + 15000);
+        });
+
+        ws.on("error", (err) => {
+          send("log", { msg: `WebSocket error: ${err.message}` });
+          if (!connected) {
+            cleanup();
+            send("log", { msg: "Falling back to simulated data" });
+            startSimulation();
+          }
+        });
+
+        ws.on("close", (code, reason) => {
+          cleanup();
+          if (connected && !aborted) {
+            send("log", { msg: `WebSocket closed: code=${code} reason=${reason || "none"} — reconnecting in 3s...` });
+            send("status", { status: "connecting" });
+            // Auto-reconnect instead of closing the SSE stream
+            setTimeout(() => connectWS(), 3000);
+          }
+        });
+
+        req.signal.addEventListener("abort", () => {
+          cleanup();
+          ws.removeAllListeners();
+          ws.on("error", () => {});
+          ws.close();
+        });
+      }
+
+      connectWS();
     },
   });
 
