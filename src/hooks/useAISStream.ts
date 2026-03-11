@@ -70,7 +70,7 @@ export function useAISStream({ bounds }: UseAISStreamOptions) {
         if (messageCountRef.current === 0) {
           addLog(`First AIS message: type=${data.MessageType}`);
         }
-        if (data.MessageType !== "PositionReport") return;
+        if (data.MessageType?.toLowerCase() !== "positionreport") return;
 
         const meta = data.MetaData;
         const report = data.Message?.PositionReport;
@@ -146,6 +146,7 @@ export function useAISStream({ bounds }: UseAISStreamOptions) {
 
   // Flush ships to state periodically and prune stale
   useEffect(() => {
+    let lastLoggedCount = -1;
     flushTimer.current = setInterval(() => {
       const now = Date.now();
       const map = shipsRef.current;
@@ -154,10 +155,15 @@ export function useAISStream({ bounds }: UseAISStreamOptions) {
       });
       setShips(new Map(map));
       setMessageCount(messageCountRef.current);
+      // Log ship count changes for debugging
+      if (map.size !== lastLoggedCount) {
+        addLog(`Ships tracked: ${map.size} | msgs: ${messageCountRef.current}`);
+        lastLoggedCount = map.size;
+      }
     }, 1000);
 
     return () => clearInterval(flushTimer.current);
-  }, []);
+  }, [addLog]);
 
   return { ships, status, messageCount, debugLog };
 }
